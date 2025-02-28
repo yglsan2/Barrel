@@ -1,0 +1,354 @@
+// ==UserScript==
+// @name         Barrel
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  MCD modeling tool
+// @author       Yglsan
+// @license      Open GPL
+// @match        *://*/*
+// @grant        none
+// ==/UserScript==
+
+// ==UserScript==
+// @name         Barrel
+// @namespace    http://tampermonkey.net/
+// @version      1.2
+// @description  MCD modeling tool
+// @author       Yglsan
+// @license      Open GPL
+// @match        *://*/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Création du style
+    const style = document.createElement('style');
+    style.textContent = `
+        .canvas {
+            position: absolute;
+            top: 50px;
+            left: 10px;
+            width: calc(100% - 20px);
+            height: calc(100% - 60px);
+            background: white;
+            border: 2px solid black;
+            overflow: hidden;
+            z-index: 9999;
+        }
+        .entity {
+            position: absolute;
+            resize: both;
+            overflow: auto;
+            border: 2px solid black;
+            background: white;
+            min-width: 150px;
+            min-height: 50px;
+            cursor: move;
+        }
+        .entity-header {
+            padding: 5px;
+            background: #f0f0f0;
+            border-bottom: 1px solid #ccc;
+        }
+        .attributes-container {
+            padding: 5px;
+        }
+        .attribute {
+            display: flex;
+            margin: 5px 0;
+        }
+        .attribute-type {
+            color: #888;
+            margin-left: 5px;
+            cursor: pointer;
+        }
+        .association-group {
+            pointer-events: auto;
+            z-index: 9998;
+        }
+        .association-rect {
+            fill: #88f;
+            stroke: #000;
+        }
+        svg {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 9997;
+        }
+        .cardinality-dropdown {
+            padding: 5px;
+            margin-left: 5px;
+            cursor: pointer;
+        }
+        .arrow-tool {
+            display: none;
+            position: absolute;
+            z-index: 9997;
+            background: rgba(0, 0, 0, 0.5);
+            color: white;
+            padding: 5px;
+            cursor: crosshair;
+        }
+    `;
+    document.head.appendChild(style);
+
+    // Création du cadre pour le MCD
+    const canvas = document.createElement('div');
+    canvas.className = 'canvas';
+    document.body.appendChild(canvas);
+
+    const entities = [];
+    let isArrowToolActive = false;
+    let startEntity = null;
+    let endEntity = null;
+    let arrowTool = null;
+
+    // Interface
+    const toolbar = document.createElement('div');
+    toolbar.style.position = 'fixed';
+    toolbar.style.top = '10px';
+    toolbar.style.left = '10px';
+    toolbar.style.zIndex = 10000;
+
+    const entityBtn = document.createElement('button');
+    entityBtn.textContent = 'Entités';
+    entityBtn.onclick = createEntity;
+
+    const associationBtn = document.createElement('button');
+    associationBtn.textContent = 'Association';
+    associationBtn.onclick = createAssociation;
+
+    const arrowBtn = document.createElement('button');
+    arrowBtn.textContent = 'Flèche';
+    arrowBtn.onclick = toggleArrowTool;
+
+    toolbar.appendChild(entityBtn);
+    toolbar.appendChild(associationBtn);
+    toolbar.appendChild(arrowBtn);
+    document.body.appendChild(toolbar);
+
+    function createEntity() {
+        const entity = document.createElement('div');
+        entity.className = 'entity';
+        entity.style.left = '100px';
+        entity.style.top = '100px';
+
+        const header = document.createElement('div');
+        header.className = 'entity-header';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Nom de l\'entité';
+
+        const validateBtn = document.createElement('button');
+        validateBtn.textContent = '✓';
+        validateBtn.onclick = () => {
+            input.disabled = true;
+            header.removeChild(validateBtn);
+            createAttributeSection(entity);
+        };
+
+        header.appendChild(input);
+        header.appendChild(validateBtn);
+        entity.appendChild(header);
+        canvas.appendChild(entity);
+
+        makeDraggable(entity);
+        entities.push(entity);
+    }
+
+    function createAttributeSection(entity) {
+        const container = document.createElement('div');
+        container.className = 'attributes-container';
+
+        const addBtn = document.createElement('button');
+        addBtn.textContent = '+ Attribut';
+        addBtn.onclick = () => addAttribute(container);
+
+        container.appendChild(addBtn);
+        entity.appendChild(container);
+        addAttribute(container);
+    }
+
+    function addAttribute(container) {
+        const div = document.createElement('div');
+        div.className = 'attribute';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Nom de l\'attribut';
+
+        const typeSpan = document.createElement('span');
+        typeSpan.className = 'attribute-type';
+        typeSpan.textContent = 'Varchar';
+        typeSpan.onclick = () => {
+            const newType = prompt('Nouveau type:', typeSpan.textContent);
+            if (newType) typeSpan.textContent = newType;
+        };
+
+        div.appendChild(input);
+        div.appendChild(typeSpan);
+        container.appendChild(div);
+    }
+
+    function makeDraggable(element) {
+        let isDragging = false;
+        let startX, startY, initialLeft, initialTop;
+
+        element.addEventListener('mousedown', startDrag);
+
+        function startDrag(e) {
+            isDragging = true;
+            startX = e.clientX;
+            startY = e.clientY;
+            initialLeft = element.offsetLeft;
+            initialTop = element.offsetTop;
+            document.addEventListener('mousemove', drag);
+            document.addEventListener('mouseup', stopDrag);
+        }
+
+        function drag(e) {
+            if (!isDragging) return;
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+            element.style.left = `${initialLeft + dx}px`;
+            element.style.top = `${initialTop + dy}px`;
+        }
+
+        function stopDrag() {
+            isDragging = false;
+            document.removeEventListener('mousemove', drag);
+            document.removeEventListener('mouseup', stopDrag);
+        }
+    }
+
+    function createAssociation() {
+        // Créer une bulle d'association à la position du curseur
+        const group = document.createElement('div');
+        group.className = 'association-group';
+        group.style.position = 'absolute';
+        group.style.left = '200px'; // Position X par défaut
+        group.style.top = '200px'; // Position Y par défaut
+        group.style.width = '120px';
+        group.style.height = '60px';
+        group.style.border = '1px solid black';
+        group.style.backgroundColor = '#88f';
+        group.style.color = 'white';
+        group.style.textAlign = 'center';
+        group.style.lineHeight = '60px'; // Centrer verticalement le texte
+        group.style.cursor = 'move';
+
+        const input = document.createElement('input');
+        input.type = 'text';
+        input.placeholder = 'Nom de l\'association';
+        input.style.width = '100%';
+        input.style.border = 'none';
+        input.style.backgroundColor = 'transparent';
+        input.style.color = 'white';
+        input.style.textAlign = 'center';
+
+        group.appendChild(input);
+
+        // Ajout des bras avec listes déroulantes pour les cardinalités
+        addCardinalitySelector(group, 'left');
+        addCardinalitySelector(group, 'right');
+
+        canvas.appendChild(group); // Ajout du groupe au canvas
+        makeDraggable(group);
+    }
+
+    function addCardinalitySelector(group, side) {
+        const dropdown = document.createElement('select');
+        dropdown.className = 'cardinality-dropdown';
+        const cardinalities = ['0,1', '1,1', '0,n', '1,n'];
+
+        cardinalities.forEach(card => {
+            const option = document.createElement('option');
+            option.value = card;
+            option.textContent = card;
+            dropdown.appendChild(option);
+        });
+
+        dropdown.style.position = 'absolute';
+        dropdown.style[side] = '-40px';
+        dropdown.style.top = '50%';
+        dropdown.style.transform = 'translateY(-50%)';
+
+        group.appendChild(dropdown);
+    }
+
+    function toggleArrowTool() {
+        if (isArrowToolActive) {
+            if (arrowTool) arrowTool.style.display = 'none';
+            isArrowToolActive = false;
+        } else {
+            arrowTool = document.createElement('div');
+            arrowTool.className = 'arrow-tool';
+            arrowTool.textContent = 'Cliquez pour ajouter une flèche';
+            document.body.appendChild(arrowTool);
+            arrowTool.style.display = 'block';
+            arrowTool.addEventListener('click', startArrowDrawing);
+            isArrowToolActive = true;
+        }
+    }
+
+    function startArrowDrawing() {
+        document.addEventListener('click', createArrow);
+        arrowTool.style.display = 'none';
+    }
+
+    function createArrow(e) {
+        if (!startEntity) {
+            startEntity = findEntityAtPosition(e.clientX, e.clientY);
+            if (startEntity) {
+                alert('Entité de départ sélectionnée');
+            }
+        } else {
+            endEntity = findEntityAtPosition(e.clientX, e.clientY);
+            if (endEntity) {
+                alert('Entité de fin sélectionnée');
+            }
+            // Dessiner l'association entre les entités ici (par exemple en SVG)
+            drawArrow(startEntity, endEntity);
+            startEntity = null; // Réinitialiser après l'ajout de la flèche
+            endEntity = null;
+        }
+    }
+
+    function findEntityAtPosition(x, y) {
+        // Recherche si une entité est sous le curseur
+        return entities.find(entity => {
+            const rect = entity.getBoundingClientRect();
+            return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+        });
+    }
+
+    function drawArrow(startEntity, endEntity) {
+        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        canvas.appendChild(svg);
+
+        const startRect = startEntity.getBoundingClientRect();
+        const endRect = endEntity.getBoundingClientRect();
+
+        const x1 = startRect.left + startRect.width / 2;
+        const y1 = startRect.top + startRect.height / 2;
+        const x2 = endRect.left + endRect.width / 2;
+        const y2 = endRect.top + endRect.height / 2;
+
+        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+        line.setAttribute('x1', x1);
+        line.setAttribute('y1', y1);
+        line.setAttribute('x2', x2);
+        line.setAttribute('y2', y2);
+        line.setAttribute('stroke', 'black');
+        line.setAttribute('stroke-width', '2');
+        svg.appendChild(line);
+    }
+
+})();
