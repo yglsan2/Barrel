@@ -1,354 +1,417 @@
 // ==UserScript==
-// @name         Barrel
+// @name         Barrel MCD
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  MCD modeling tool
-// @author       Yglsan
-// @license      Open GPL
+// @version      11.0
+// @description  Modélisation Merise 
+// @author       yglsan
+// @license      GPL-3.0
 // @match        *://*/*
-// @grant        none
-// ==/UserScript==
-
-// ==UserScript==
-// @name         Barrel
-// @namespace    http://tampermonkey.net/
-// @version      1.2
-// @description  MCD modeling tool
-// @author       Yglsan
-// @license      Open GPL
-// @match        *://*/*
-// @grant        none
+// @grant        GM_addStyle
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    // Création du style
-    const style = document.createElement('style');
-    style.textContent = `
-        .canvas {
-            position: absolute;
-            top: 50px;
-            left: 10px;
-            width: calc(100% - 20px);
-            height: calc(100% - 60px);
-            background: white;
-            border: 2px solid black;
-            overflow: hidden;
-            z-index: 9999;
-        }
-        .entity {
-            position: absolute;
-            resize: both;
-            overflow: auto;
-            border: 2px solid black;
-            background: white;
-            min-width: 150px;
-            min-height: 50px;
-            cursor: move;
-        }
-        .entity-header {
-            padding: 5px;
-            background: #f0f0f0;
-            border-bottom: 1px solid #ccc;
-        }
-        .attributes-container {
-            padding: 5px;
-        }
-        .attribute {
-            display: flex;
-            margin: 5px 0;
-        }
-        .attribute-type {
-            color: #888;
-            margin-left: 5px;
-            cursor: pointer;
-        }
-        .association-group {
-            pointer-events: auto;
-            z-index: 9998;
-        }
-        .association-rect {
-            fill: #88f;
-            stroke: #000;
-        }
-        svg {
-            position: absolute;
+    // Styles complets
+    GM_addStyle(`
+        .mcd-container {
+            position: fixed;
             top: 0;
             left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none;
-            z-index: 9997;
+            width: 100vw;
+            height: 100vh;
+            background: white;
+            z-index: 2147483647;
+            overflow: auto;
         }
-        .cardinality-dropdown {
-            padding: 5px;
-            margin-left: 5px;
+
+        .entity {
+            position: absolute;
+            background: #f8f9fa;
+            border: 2px solid #3498db;
+            border-radius: 8px;
+            padding: 15px;
+            min-width: 240px;
+            cursor: move;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            transition: transform 0.2s;
+        }
+
+        .association {
+            border-color: #f1c40f;
+            background: #fff3cd;
+            min-height: 120px;
+        }
+
+        .connector {
+            width: 24px;
+            height: 24px;
+            background: #2ecc71;
+            border-radius: 50%;
+            position: absolute;
+            top: 50%;
+            cursor: pointer;
+            transform: translateY(-50%);
+            transition: all 0.3s;
+            border: 2px solid white;
+            z-index: 1000;
+        }
+
+        .connector.connected {
+            background: #3498db;
+            box-shadow: 0 0 12px rgba(52,152,219,0.4);
+        }
+
+        .connector.left { left: -30px; }
+        .connector.right { right: -30px; }
+
+        .connection {
+            stroke: #3498db;
+            stroke-width: 3;
+            fill: none;
+            marker-end: url(#arrowhead);
+        }
+
+        .cardinality-panel {
+            position: absolute;
+            background: white;
+            padding: 8px;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            cursor: move;
+            z-index: 1001;
+        }
+
+        .attribute-list {
+            margin-top: 15px;
+        }
+
+        .attribute-row {
+            display: flex;
+            gap: 8px;
+            margin: 8px 0;
+        }
+
+        .type-select {
+            min-width: 120px;
+            padding: 4px;
+        }
+
+        .entity-header input {
+            width: 100%;
+            padding: 8px;
+            margin-bottom: 12px;
+        }
+
+        .add-attribute-btn {
+            margin-top: 10px;
+            padding: 6px 12px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
             cursor: pointer;
         }
-        .arrow-tool {
-            display: none;
-            position: absolute;
-            z-index: 9997;
-            background: rgba(0, 0, 0, 0.5);
-            color: white;
-            padding: 5px;
-            cursor: crosshair;
-        }
+    `);
+
+    // Structure DOM
+    const container = document.createElement('div');
+    container.className = 'mcd-container';
+    document.body.appendChild(container);
+
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.innerHTML = `
+        <defs>
+            <marker id="arrowhead" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto">
+                <path fill="#3498db" d="M0,0 L10,5 L0,10 z"/>
+            </marker>
+        </defs>
     `;
-    document.head.appendChild(style);
+    container.appendChild(svg);
 
-    // Création du cadre pour le MCD
-    const canvas = document.createElement('div');
-    canvas.className = 'canvas';
-    document.body.appendChild(canvas);
+    // Variables globales
+    let currentConnection = null;
+    const connections = [];
+    const cardinalityRules = {
+        '0,1': ['1,1', '1,N'],
+        '1,1': ['0,1', '1,N'],
+        '0,N': ['1,1', '1,N'],
+        '1,N': ['0,1', '1,1', '0,N']
+    };
 
-    const entities = [];
-    let isArrowToolActive = false;
-    let startEntity = null;
-    let endEntity = null;
-    let arrowTool = null;
+    // Classe principale
+    class MCDElement {
+        constructor(isAssociation = false) {
+            this.isAssociation = isAssociation;
+            this.element = document.createElement('div');
+            this.element.className = isAssociation ? 'association entity' : 'entity';
+            this.element.style.left = `${Math.random() * 500 + 100}px`;
+            this.element.style.top = `${Math.random() * 300 + 100}px`;
 
-    // Interface
+            this.initHeader();
+            this.initConnectors();
+            if (!isAssociation) this.initAttributes();
+            this.makeDraggable();
+            
+            container.appendChild(this.element);
+            this.element.scrollIntoView({ behavior: 'smooth' });
+        }
+
+        initHeader() {
+            const header = document.createElement('div');
+            header.className = 'entity-header';
+            
+            const input = document.createElement('input');
+            input.placeholder = this.isAssociation ? 'Nom de l\'association' : 'Nom de l\'entité';
+            
+            header.appendChild(input);
+
+            if (!this.isAssociation) {
+                const addBtn = document.createElement('button');
+                addBtn.className = 'add-attribute-btn';
+                addBtn.textContent = '+ Ajouter attribut';
+                addBtn.onclick = () => this.addAttribute();
+                header.appendChild(addBtn);
+            }
+
+            this.element.appendChild(header);
+        }
+
+        initAttributes() {
+            this.attributesContainer = document.createElement('div');
+            this.attributesContainer.className = 'attribute-list';
+            this.element.appendChild(this.attributesContainer);
+            this.addAttribute();
+        }
+
+        addAttribute() {
+            const row = document.createElement('div');
+            row.className = 'attribute-row';
+
+            const nameInput = document.createElement('input');
+            nameInput.placeholder = 'Nom attribut';
+            nameInput.style.flex = '1';
+
+            const typeSelect = document.createElement('select');
+            typeSelect.className = 'type-select';
+            [
+                'VARCHAR(255)', 'INT', 'SMALLINT', 'BIGINT', 'DECIMAL', 'NUMERIC',
+                'DATE', 'TIME', 'DATETIME', 'TIMESTAMP', 'YEAR',
+                'CHAR', 'TEXT', 'BLOB', 'ENUM', 'SET',
+                'BOOLEAN', 'BIT', 'BINARY', 'VARBINARY',
+                'FLOAT', 'DOUBLE', 'REAL', 'JSON'
+            ].forEach(type => {
+                const option = document.createElement('option');
+                option.textContent = type;
+                typeSelect.appendChild(option);
+            });
+
+            row.appendChild(nameInput);
+            row.appendChild(typeSelect);
+            this.attributesContainer.appendChild(row);
+        }
+
+        initConnectors() {
+            ['left', 'right'].forEach(side => {
+                const connector = document.createElement('div');
+                connector.className = `connector ${side}`;
+                connector.addEventListener('click', (e) => this.handleConnector(e));
+                this.element.appendChild(connector);
+            });
+        }
+
+        handleConnector(e) {
+            const connector = e.target;
+            if (connector.classList.contains('connected')) return;
+
+            if (!currentConnection) {
+                this.startConnection(connector);
+            } else {
+                this.finalizeConnection(connector);
+            }
+        }
+
+        startConnection(connector) {
+            currentConnection = {
+                start: { element: this, connector },
+                path: document.createElementNS('http://www.w3.org/2000/svg', 'path'),
+                panels: []
+            };
+
+            currentConnection.path.className = 'connection';
+            svg.appendChild(currentConnection.path);
+            connector.classList.add('active');
+
+            document.addEventListener('mousemove', this.updateConnection);
+        }
+
+        updateConnection = (e) => {
+            const startRect = currentConnection.start.connector.getBoundingClientRect();
+            currentConnection.path.setAttribute('d', `
+                M ${startRect.left + 12} ${startRect.top + 12}
+                Q ${(startRect.left + e.clientX)/2} ${(startRect.top + e.clientY)/2}
+                ${e.clientX} ${e.clientY}
+            `);
+        }
+
+        finalizeConnection(endConnector) {
+            const endElement = endConnector.parentElement.mcdElement;
+            
+            currentConnection.end = { element: endElement, connector: endConnector };
+            endConnector.classList.add('connected');
+            
+            this.createCardinalityPanels();
+            this.drawFinalConnection();
+            connections.push(currentConnection);
+            currentConnection = null;
+        }
+
+        createCardinalityPanels() {
+            [currentConnection.start, currentConnection.end].forEach((point, index) => {
+                const panel = document.createElement('div');
+                panel.className = 'cardinality-panel';
+                
+                const select = document.createElement('select');
+                select.dataset.side = index ? 'end' : 'start';
+                Object.keys(cardinalityRules).forEach(opt => {
+                    const option = document.createElement('option');
+                    option.textContent = opt;
+                    select.appendChild(option);
+                });
+
+                select.addEventListener('change', (e) => this.updateCardinalityRules(e.target));
+                panel.appendChild(select);
+                this.positionPanel(panel, point.connector);
+                this.makePanelDraggable(panel);
+                container.appendChild(panel);
+                currentConnection.panels.push(panel);
+            });
+        }
+
+        positionPanel(panel, connector) {
+            const rect = connector.getBoundingClientRect();
+            panel.style.left = `${rect.left + 30}px`;
+            panel.style.top = `${rect.top - 30}px`;
+        }
+
+        makePanelDraggable(panel) {
+            let isDragging = false;
+            let offsetX, offsetY;
+
+            panel.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                offsetX = e.clientX - panel.offsetLeft;
+                offsetY = e.clientY - panel.offsetTop;
+                document.addEventListener('mousemove', drag);
+                document.addEventListener('mouseup', stop);
+            });
+
+            const drag = (e) => {
+                if (!isDragging) return;
+                panel.style.left = `${e.clientX - offsetX}px`;
+                panel.style.top = `${e.clientY - offsetY}px`;
+            };
+
+            const stop = () => {
+                isDragging = false;
+                document.removeEventListener('mousemove', drag);
+                document.removeEventListener('mouseup', stop);
+            };
+        }
+
+        drawFinalConnection() {
+            const updatePath = () => {
+                const start = currentConnection.start.connector.getBoundingClientRect();
+                const end = currentConnection.end.connector.getBoundingClientRect();
+                currentConnection.path.setAttribute('d', `
+                    M ${start.left + 12} ${start.top + 12}
+                    Q ${(start.left + end.left)/2} ${(start.top + end.top)/2 + 40}
+                    ${end.left + 12} ${end.top + 12}
+                `);
+            };
+            
+            updatePath();
+            document.removeEventListener('mousemove', this.updateConnection);
+        }
+
+        makeDraggable() {
+            let isDragging = false;
+            let offsetX, offsetY;
+
+            this.element.addEventListener('mousedown', (e) => {
+                if (e.target.classList.contains('connector')) return;
+                
+                isDragging = true;
+                offsetX = e.clientX - this.element.offsetLeft;
+                offsetY = e.clientY - this.element.offsetTop;
+
+                document.addEventListener('mousemove', drag);
+                document.addEventListener('mouseup', stop);
+            });
+
+            const drag = (e) => {
+                if (!isDragging) return;
+                const x = e.clientX - offsetX;
+                const y = e.clientY - offsetY;
+                
+                this.element.style.left = `${x}px`;
+                this.element.style.top = `${y}px`;
+                
+                connections.forEach(conn => {
+                    if (conn.start.element === this || conn.end.element === this) {
+                        const start = conn.start.connector.getBoundingClientRect();
+                        const end = conn.end.connector.getBoundingClientRect();
+                        conn.path.setAttribute('d', `
+                            M ${start.left + 12} ${start.top + 12}
+                            Q ${(start.left + end.left)/2} ${(start.top + end.top)/2 + 40}
+                            ${end.left + 12} ${end.top + 12}
+                        `);
+                    }
+                    conn.panels.forEach((panel, i) => this.positionPanel(panel, conn[i ? 'end' : 'start'].connector));
+                });
+            };
+
+            const stop = () => {
+                isDragging = false;
+                document.removeEventListener('mousemove', drag);
+                document.removeEventListener('mouseup', stop);
+            };
+        }
+    }
+
+    // Barre d'outils
     const toolbar = document.createElement('div');
-    toolbar.style.position = 'fixed';
-    toolbar.style.top = '10px';
-    toolbar.style.left = '10px';
-    toolbar.style.zIndex = 10000;
+    toolbar.style.cssText = `
+        position: fixed;
+        top: 20px;
+        left: 20px;
+        background: white;
+        padding: 12px;
+        border-radius: 8px;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        z-index: 9999;
+        display: flex;
+        gap: 8px;
+    `;
 
-    const entityBtn = document.createElement('button');
-    entityBtn.textContent = 'Entités';
-    entityBtn.onclick = createEntity;
+    ['Entité', 'Association'].forEach(type => {
+        const btn = document.createElement('button');
+        btn.textContent = type;
+        btn.style.cssText = `
+            padding: 8px 16px;
+            background: ${type === 'Entité' ? '#3498db' : '#f1c40f'};
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        `;
+        btn.onclick = () => new MCDElement(type === 'Association');
+        toolbar.appendChild(btn);
+    });
 
-    const associationBtn = document.createElement('button');
-    associationBtn.textContent = 'Association';
-    associationBtn.onclick = createAssociation;
+    container.appendChild(toolbar);
 
-    const arrowBtn = document.createElement('button');
-    arrowBtn.textContent = 'Flèche';
-    arrowBtn.onclick = toggleArrowTool;
-
-    toolbar.appendChild(entityBtn);
-    toolbar.appendChild(associationBtn);
-    toolbar.appendChild(arrowBtn);
-    document.body.appendChild(toolbar);
-
-    function createEntity() {
-        const entity = document.createElement('div');
-        entity.className = 'entity';
-        entity.style.left = '100px';
-        entity.style.top = '100px';
-
-        const header = document.createElement('div');
-        header.className = 'entity-header';
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Nom de l\'entité';
-
-        const validateBtn = document.createElement('button');
-        validateBtn.textContent = '✓';
-        validateBtn.onclick = () => {
-            input.disabled = true;
-            header.removeChild(validateBtn);
-            createAttributeSection(entity);
-        };
-
-        header.appendChild(input);
-        header.appendChild(validateBtn);
-        entity.appendChild(header);
-        canvas.appendChild(entity);
-
-        makeDraggable(entity);
-        entities.push(entity);
-    }
-
-    function createAttributeSection(entity) {
-        const container = document.createElement('div');
-        container.className = 'attributes-container';
-
-        const addBtn = document.createElement('button');
-        addBtn.textContent = '+ Attribut';
-        addBtn.onclick = () => addAttribute(container);
-
-        container.appendChild(addBtn);
-        entity.appendChild(container);
-        addAttribute(container);
-    }
-
-    function addAttribute(container) {
-        const div = document.createElement('div');
-        div.className = 'attribute';
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Nom de l\'attribut';
-
-        const typeSpan = document.createElement('span');
-        typeSpan.className = 'attribute-type';
-        typeSpan.textContent = 'Varchar';
-        typeSpan.onclick = () => {
-            const newType = prompt('Nouveau type:', typeSpan.textContent);
-            if (newType) typeSpan.textContent = newType;
-        };
-
-        div.appendChild(input);
-        div.appendChild(typeSpan);
-        container.appendChild(div);
-    }
-
-    function makeDraggable(element) {
-        let isDragging = false;
-        let startX, startY, initialLeft, initialTop;
-
-        element.addEventListener('mousedown', startDrag);
-
-        function startDrag(e) {
-            isDragging = true;
-            startX = e.clientX;
-            startY = e.clientY;
-            initialLeft = element.offsetLeft;
-            initialTop = element.offsetTop;
-            document.addEventListener('mousemove', drag);
-            document.addEventListener('mouseup', stopDrag);
-        }
-
-        function drag(e) {
-            if (!isDragging) return;
-            const dx = e.clientX - startX;
-            const dy = e.clientY - startY;
-            element.style.left = `${initialLeft + dx}px`;
-            element.style.top = `${initialTop + dy}px`;
-        }
-
-        function stopDrag() {
-            isDragging = false;
-            document.removeEventListener('mousemove', drag);
-            document.removeEventListener('mouseup', stopDrag);
-        }
-    }
-
-    function createAssociation() {
-        // Créer une bulle d'association à la position du curseur
-        const group = document.createElement('div');
-        group.className = 'association-group';
-        group.style.position = 'absolute';
-        group.style.left = '200px'; // Position X par défaut
-        group.style.top = '200px'; // Position Y par défaut
-        group.style.width = '120px';
-        group.style.height = '60px';
-        group.style.border = '1px solid black';
-        group.style.backgroundColor = '#88f';
-        group.style.color = 'white';
-        group.style.textAlign = 'center';
-        group.style.lineHeight = '60px'; // Centrer verticalement le texte
-        group.style.cursor = 'move';
-
-        const input = document.createElement('input');
-        input.type = 'text';
-        input.placeholder = 'Nom de l\'association';
-        input.style.width = '100%';
-        input.style.border = 'none';
-        input.style.backgroundColor = 'transparent';
-        input.style.color = 'white';
-        input.style.textAlign = 'center';
-
-        group.appendChild(input);
-
-        // Ajout des bras avec listes déroulantes pour les cardinalités
-        addCardinalitySelector(group, 'left');
-        addCardinalitySelector(group, 'right');
-
-        canvas.appendChild(group); // Ajout du groupe au canvas
-        makeDraggable(group);
-    }
-
-    function addCardinalitySelector(group, side) {
-        const dropdown = document.createElement('select');
-        dropdown.className = 'cardinality-dropdown';
-        const cardinalities = ['0,1', '1,1', '0,n', '1,n'];
-
-        cardinalities.forEach(card => {
-            const option = document.createElement('option');
-            option.value = card;
-            option.textContent = card;
-            dropdown.appendChild(option);
-        });
-
-        dropdown.style.position = 'absolute';
-        dropdown.style[side] = '-40px';
-        dropdown.style.top = '50%';
-        dropdown.style.transform = 'translateY(-50%)';
-
-        group.appendChild(dropdown);
-    }
-
-    function toggleArrowTool() {
-        if (isArrowToolActive) {
-            if (arrowTool) arrowTool.style.display = 'none';
-            isArrowToolActive = false;
-        } else {
-            arrowTool = document.createElement('div');
-            arrowTool.className = 'arrow-tool';
-            arrowTool.textContent = 'Cliquez pour ajouter une flèche';
-            document.body.appendChild(arrowTool);
-            arrowTool.style.display = 'block';
-            arrowTool.addEventListener('click', startArrowDrawing);
-            isArrowToolActive = true;
-        }
-    }
-
-    function startArrowDrawing() {
-        document.addEventListener('click', createArrow);
-        arrowTool.style.display = 'none';
-    }
-
-    function createArrow(e) {
-        if (!startEntity) {
-            startEntity = findEntityAtPosition(e.clientX, e.clientY);
-            if (startEntity) {
-                alert('Entité de départ sélectionnée');
-            }
-        } else {
-            endEntity = findEntityAtPosition(e.clientX, e.clientY);
-            if (endEntity) {
-                alert('Entité de fin sélectionnée');
-            }
-            // Dessiner l'association entre les entités ici (par exemple en SVG)
-            drawArrow(startEntity, endEntity);
-            startEntity = null; // Réinitialiser après l'ajout de la flèche
-            endEntity = null;
-        }
-    }
-
-    function findEntityAtPosition(x, y) {
-        // Recherche si une entité est sous le curseur
-        return entities.find(entity => {
-            const rect = entity.getBoundingClientRect();
-            return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
-        });
-    }
-
-    function drawArrow(startEntity, endEntity) {
-        const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-        canvas.appendChild(svg);
-
-        const startRect = startEntity.getBoundingClientRect();
-        const endRect = endEntity.getBoundingClientRect();
-
-        const x1 = startRect.left + startRect.width / 2;
-        const y1 = startRect.top + startRect.height / 2;
-        const x2 = endRect.left + endRect.width / 2;
-        const y2 = endRect.top + endRect.height / 2;
-
-        const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        line.setAttribute('x1', x1);
-        line.setAttribute('y1', y1);
-        line.setAttribute('x2', x2);
-        line.setAttribute('y2', y2);
-        line.setAttribute('stroke', 'black');
-        line.setAttribute('stroke-width', '2');
-        svg.appendChild(line);
-    }
-
+    // Initialisation des références
+    HTMLElement.prototype.mcdElement = null;
 })();
